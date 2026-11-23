@@ -107,6 +107,14 @@ Registro detallado del uso de IA en cada fase del desarrollo, para la documentac
 
 **Valoración**: la calidad del 2.5 mejora notablemente cuando la tarea usa APIs Win32 estándar bien documentadas (OpenProcess, VirtualAllocEx, CreateRemoteThread). El patrón de inyección DLL clásico es probablemente parte de su entrenamiento. Contraste claro con la Fase 2 donde el inline hooking x64 (tarea de bajo nivel poco documentada) produjo código inservible
 
+**Compilación y prueba (2026-11-23)**
+- Compilado con `x86_64-w64-mingw32-gcc -Wall -municode` desde Home-Server y PC-Personal
+- Primer intento: inyectar desde PowerShell en la propia PowerShell (`$PID`) crasheó la sesión (race condition: otros threads llamando a NtQuerySystemInformation mientras se parchean los bytes)
+- Segundo intento: inyectar en cmd.exe remoto — inyección exitosa, pero `tasklist` no muestra el efecto porque es un proceso hijo separado (no tiene el hook)
+- Prueba definitiva: `test_inject.exe` (programa que espera Enter, luego enumera). Se inyectó hook.dll desde otra PowerShell mientras esperaba. Tras pulsar Enter, `$rkping.exe` (PID 5704) **no aparece** en la enumeración — el hook está activo en el proceso inyectado
+- Nota: `wprintf` con caracteres anchos no muestra texto cuando se ejecuta desde ruta UNC; funciona al copiar a ruta local (`C:\lab\`)
+- **Fase 3 completada**: la inyección remota vía CreateRemoteThread + LoadLibraryW instala correctamente el hook en procesos externos
+
 ### Fase 4 — auto-ocultación
 (pendiente)
 
