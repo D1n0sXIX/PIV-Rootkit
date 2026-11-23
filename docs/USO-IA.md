@@ -44,8 +44,41 @@ Registro detallado del uso de IA en cada fase del desarrollo, para la documentac
 - Prueba exitosa con `ping.exe` copiado como `$rkping.exe`: el scanner detectó correctamente el proceso (PID 4688, nombre `$rkping.exe`)
 - **Fase 1 completada**: config_reader carga los 3 prefijos del `.txt` y process_scanner los matchea contra la lista de procesos del sistema
 
-### Fase 2 — hook DLL
-(pendiente)
+### Fase 2 — hook DLL (NtQuerySystemInformation)
+
+**Fecha**: 2026-11-23
+
+**Paso 1 — Diseño (Qwen 3.5, modelo `llm-cpp`)**
+- Prompt: diseñar cabeceras ntdefs.h (structs NT para x64) y hook.h (API de inline hook)
+- Resultado: completamente inutilizable. SYSTEM_PROCESS_INFORMATION con cientos de campos `ULONG Reserved` falsos, offsets incorrectos en los comentarios (dice NextEntryOffset = 2 bytes, es ULONG = 4), incluye `winternl.h` que entraría en conflicto, y el output se cortó por el límite de tokens (2048). No se puede aprovechar nada
+- Tiempo: ~90 s
+
+**Revisión de Claude**: se reescribieron ambas cabeceras completamente. ntdefs.h con la estructura correcta de SYSTEM_PROCESS_INFORMATION para x64 (offsets verificados: ImageName en 0x38), typedef de NtQuerySystemInformation_t, y prefijo MY_ en los structs para evitar conflictos. hook.h reducido a dos funciones (hook_install, hook_remove)
+
+**Paso 2 — Implementación (Qwen 2.5, modelo `llm-cpp-fast`)**
+- Prompt: implementar hook.c con las cabeceras corregidas, especificación detallada del mecanismo de inline hook (12 bytes: mov rax + jmp rax), trampoline, y filtrado
+- Resultado: 10 bugs, el peor registro hasta ahora:
+  1. `extern "C"` — C++, no C
+  2. `#include <winternl.h>` — conflicto de tipos
+  3. Trampoline escribe punteros como datos, no instrucciones de salto
+  4. Hook install escribe un puntero en vez de un JMP
+  5. VirtualProtect guarda oldProtect en `&state.original`, destruyendo el puntero a la función
+  6. Llama a `state.original` (ya parcheada) en vez de `state.trampoline` — bucle infinito
+  7. Loop `while (NextEntryOffset != 0)` no procesa la última entrada
+  8. Rama muerta (NextEntryOffset == 0 dentro de while que ya exige != 0)
+  9. VirtualFree con size != 0 y MEM_RELEASE (debe ser 0)
+  10. Falta `#include <string.h>` para memcpy
+- Tiempo: ~45 s
+
+**Correcciones de Claude**: se reescribió hook.c completamente. Cambios principales:
+1. Función `write_abs_jmp` que escribe los 12 bytes correctos (0x48 0xB8 [addr] 0xFF 0xE0)
+2. Trampoline: 16 bytes salvados + JMP absoluto de vuelta a original+16
+3. VirtualProtect con variable DWORD separada para oldProtect
+4. Hook function llama a g_trampoline (no a g_original)
+5. Bucle for(;;) con break al final cuando NextEntryOffset == 0
+6. dllmain.c y test_hook.c escritos directamente por Claude
+
+**Valoración**: la calidad del 2.5 se degrada significativamente con tareas complejas. En la Fase 1 (funciones simples de Win32) producía código estructuralmente correcto con omisiones menores. Aquí, con inline hooking x64, el código no es funcional en absoluto — ni la idea del inline hook (escribe datos, no instrucciones), ni la protección de memoria, ni el flujo de llamadas son correctos. El 3.5 como arquitecto tampoco aporta: su struct de 150+ campos Reserved demuestra que no comprende la estructura real de SYSTEM_PROCESS_INFORMATION
 
 ### Fase 3 — inyector
 (pendiente)
