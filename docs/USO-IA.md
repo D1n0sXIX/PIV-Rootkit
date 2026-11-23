@@ -85,8 +85,27 @@ Registro detallado del uso de IA en cada fase del desarrollo, para la documentac
 - Prueba en VM: `$rkping.exe` (PID 5704) visible antes de cargar la DLL, **invisible después**. `test_hook.exe` carga la DLL con LoadLibrary, el DllMain instala el inline hook de NtQuerySystemInformation, y la segunda enumeración de procesos ya no muestra el proceso oculto
 - **Fase 2 completada**: el inline hook de NtQuerySystemInformation filtra correctamente procesos por prefijo configurable
 
-### Fase 3 — inyector
-(pendiente)
+### Fase 3 — inyector de DLL
+
+**Fecha**: 2026-11-23
+
+**Paso 1 — Diseño (Qwen 3.5, modelo `llm-cpp`)**
+- Prompt: diseñar cabecera para inyector DLL con enable_debug_privilege, inject_dll e inject_all
+- Resultado: razonable pero sobre-ingeniería. Creó un InjectorContext struct innecesario (la skip list es estática), caching del token handle sin motivo, `extern "C"` (C++), y los nombres en la skip list sin extensión `.exe` (szExeFile devuelve `csrss.exe`, no `csrss`)
+- Tiempo: ~90 s
+
+**Revisión de Claude**: se simplificó la cabecera a 3 funciones sin estado: `enable_debug_privilege`, `inject_dll`, `inject_all`
+
+**Paso 2 — Implementación (Qwen 2.5, modelo `llm-cpp-fast`)**
+- Resultado: significativamente mejor que en la Fase 2. El código es funcionalmente correcto con solo 3 problemas menores:
+  1. Falta `#include "injector.h"`
+  2. Array `skip_list` definido pero no usado — las comparaciones están hardcodeadas en `inject_all`
+  3. No salta PID 0 (System Idle Process)
+- Tiempo: ~45 s
+
+**Correcciones de Claude**: mínimas — añadido include, refactorizada la skip list con función `is_skipped()` que itera el array, añadido check de PID 0, añadido wprintf de feedback por proceso inyectado. `inject_main.c` escrito directamente por Claude (punto de entrada con dos modos: PID único o todos)
+
+**Valoración**: la calidad del 2.5 mejora notablemente cuando la tarea usa APIs Win32 estándar bien documentadas (OpenProcess, VirtualAllocEx, CreateRemoteThread). El patrón de inyección DLL clásico es probablemente parte de su entrenamiento. Contraste claro con la Fase 2 donde el inline hooking x64 (tarea de bajo nivel poco documentada) produjo código inservible
 
 ### Fase 4 — auto-ocultación
 (pendiente)
