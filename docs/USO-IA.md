@@ -80,6 +80,11 @@ Registro detallado del uso de IA en cada fase del desarrollo, para la documentac
 
 **Valoración**: la calidad del 2.5 se degrada significativamente con tareas complejas. En la Fase 1 (funciones simples de Win32) producía código estructuralmente correcto con omisiones menores. Aquí, con inline hooking x64, el código no es funcional en absoluto — ni la idea del inline hook (escribe datos, no instrucciones), ni la protección de memoria, ni el flujo de llamadas son correctos. El 3.5 como arquitecto tampoco aporta: su struct de 150+ campos Reserved demuestra que no comprende la estructura real de SYSTEM_PROCESS_INFORMATION
 
+**Compilación y prueba (2026-11-23)**
+- Compilado con `x86_64-w64-mingw32-gcc` desde el Home-Server (recién instalado mingw-w64) y desde Kali. DLL: `-shared -Wall`; test: `-Wall -municode`
+- Prueba en VM: `$rkping.exe` (PID 5704) visible antes de cargar la DLL, **invisible después**. `test_hook.exe` carga la DLL con LoadLibrary, el DllMain instala el inline hook de NtQuerySystemInformation, y la segunda enumeración de procesos ya no muestra el proceso oculto
+- **Fase 2 completada**: el inline hook de NtQuerySystemInformation filtra correctamente procesos por prefijo configurable
+
 ### Fase 3 — inyector
 (pendiente)
 
