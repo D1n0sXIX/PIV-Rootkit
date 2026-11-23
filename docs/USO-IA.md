@@ -38,6 +38,12 @@ Registro detallado del uso de IA en cada fase del desarrollo, para la documentac
 
 **Valoración**: el 2.5 produce código estructuralmente correcto pero con omisiones que impiden la compilación y un bug de compatibilidad Windows que haría que el programa no funcionase. Sin revisión, la Fase 1 no compilaría ni funcionaría.
 
+**Compilación y prueba (2026-11-23)**
+- Compilado con `x86_64-w64-mingw32-gcc -Wall -municode` desde Kali (PC-Personal), ya que la VM del lab no tiene compilador. Ficheros pasados a la VM vía carpeta compartida de VirtualBox (Guest Additions)
+- Primer intento de prueba con `notepad.exe` copiado como `$rknotepad.exe` falló: notepad no arranca fuera de System32 (le faltan dependencias `.mui`). Este mismo problema afectó a la prueba de r77 del 2026-11-17 con `$77calc.exe`
+- Prueba exitosa con `ping.exe` copiado como `$rkping.exe`: el scanner detectó correctamente el proceso (PID 4688, nombre `$rkping.exe`)
+- **Fase 1 completada**: config_reader carga los 3 prefijos del `.txt` y process_scanner los matchea contra la lista de procesos del sistema
+
 ### Fase 2 — hook DLL
 (pendiente)
 
