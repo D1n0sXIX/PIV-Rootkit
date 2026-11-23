@@ -1,0 +1,64 @@
+#ifndef NTDEFS_H
+#define NTDEFS_H
+
+#include <windows.h>
+
+#ifndef STATUS_SUCCESS
+#define STATUS_SUCCESS ((NTSTATUS)0x00000000)
+#endif
+
+#define SYSTEM_PROCESS_INFORMATION_CLASS 5
+
+typedef LONG NTSTATUS;
+
+typedef struct _MY_UNICODE_STRING {
+    USHORT Length;
+    USHORT MaximumLength;
+    PWSTR  Buffer;
+} MY_UNICODE_STRING;
+
+typedef struct _MY_SYSTEM_PROCESS_INFORMATION {
+    ULONG           NextEntryOffset;
+    ULONG           NumberOfThreads;
+    LARGE_INTEGER   WorkingSetPrivateSize;
+    ULONG           HardFaultCount;
+    ULONG           NumberOfThreadsHighWatermark;
+    ULONGLONG       CycleTime;
+    LARGE_INTEGER   CreateTime;
+    LARGE_INTEGER   UserTime;
+    LARGE_INTEGER   KernelTime;
+    MY_UNICODE_STRING ImageName;
+    LONG            BasePriority;
+    HANDLE          UniqueProcessId;
+    HANDLE          InheritedFromUniqueProcessId;
+    ULONG           HandleCount;
+    ULONG           SessionId;
+    ULONG_PTR       UniqueProcessKey;
+    SIZE_T          PeakVirtualSize;
+    SIZE_T          VirtualSize;
+    ULONG           PageFaultCount;
+    SIZE_T          PeakWorkingSetSize;
+    SIZE_T          WorkingSetSize;
+    SIZE_T          QuotaPeakPagedPoolUsage;
+    SIZE_T          QuotaPagedPoolUsage;
+    SIZE_T          QuotaPeakNonPagedPoolUsage;
+    SIZE_T          QuotaNonPagedPoolUsage;
+    SIZE_T          PagefileUsage;
+    SIZE_T          PeakPagefileUsage;
+    SIZE_T          PrivatePageCount;
+    LARGE_INTEGER   ReadOperationCount;
+    LARGE_INTEGER   WriteOperationCount;
+    LARGE_INTEGER   OtherOperationCount;
+    LARGE_INTEGER   ReadTransferCount;
+    LARGE_INTEGER   WriteTransferCount;
+    LARGE_INTEGER   OtherTransferCount;
+} MY_SYSTEM_PROCESS_INFORMATION;
+
+typedef NTSTATUS (NTAPI *NtQuerySystemInformation_t)(
+    ULONG SystemInformationClass,
+    PVOID SystemInformation,
+    ULONG SystemInformationLength,
+    PULONG ReturnLength
+);
+
+#endif
