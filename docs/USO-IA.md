@@ -116,7 +116,87 @@ Registro detallado del uso de IA en cada fase del desarrollo, para la documentac
 - **Fase 3 completada**: la inyección remota vía CreateRemoteThread + LoadLibraryW instala correctamente el hook en procesos externos
 
 ### Fase 4 — auto-ocultación
-(pendiente)
 
-### Fase 5 — integración
-(pendiente)
+**Fecha**: 2026-11-25
+
+**Implementación**: sin código nuevo. `injector.exe` renombrado a `$rkinjector.exe`; al llevar el prefijo `$rk` del fichero de configuración, el hook lo filtra igual que cualquier otro proceso con ese prefijo.
+
+**Uso de IA**: ninguno. El mecanismo es una consecuencia directa del diseño de prefijos configurables de las Fases 1-2: si el binario del rootkit lleva el prefijo, el hook ya lo oculta sin modificaciones.
+
+**Prueba (2026-11-25)**:
+- Get-Process desde shell hooked no muestra `$rkping` (vacío en `Where-Object ProcessName -like '*rkping*'`)
+- Desde shell no hooked, `$rkping` sí es visible → la ocultación es selectiva, solo afecta a procesos inyectados
+- Sysmon (config parcheada): `$rkinjector.exe` aparece con nombre completo en eventos 8 (CreateRemoteThread, StartFunction=LoadLibraryW) y 10 (ProcessAccess, GrantedAccess=0x142A) → la auto-ocultación engaña al modo usuario pero no a la telemetría de kernel
+
+**Limitación documentada**: la tabla de prefijos se carga en DllMain al inyectar. Para cambiar los prefijos hay que editar el `.txt` y reinyectar; los procesos ya hooked conservan la tabla antigua en memoria.
+
+**Fase 4 completada**: la auto-ocultación funciona sin código adicional gracias al diseño modular de prefijos.
+
+### Fase 5 — integración y medición
+
+**Fecha**: 2026-11-25
+
+**Implementación**: no se repitió una Ronda C completa con `$rkinjector.exe` porque la VM se saturaba al repetir la inyección masiva. La evidencia se compone de: (1) Ronda B completa con `injector.exe` (misma cadena, mismo hook.dll, mismos eventos), (2) Sysmon de Fase 4 con `$rkinjector.exe` mostrando eventos 8 y 10 idénticos, y (3) Get-Process hooked confirmando la auto-ocultación. Funcionalmente equivalente: el renombrado del binario no cambia el comportamiento de la inyección ni los eventos que genera.
+
+**Uso de IA**: Claude ayudó a diseñar el protocolo de las Rondas A y B (qué eventos capturar, en qué orden, cómo contrastar la config estándar vs la parcheada) y a analizar la config de SwiftOnSecurity para identificar los 3 puntos ciegos. Los comandos de Sysmon los ejecutó D1n0 manualmente.
+
+**Resultado**: todas las filas de la matriz de visibilidad cubiertas para la técnica de inyección DLL clásica con auto-ocultación por prefijo. Config estándar ciega a 3/4 tipos de evento; config parcheada expone la cadena de inyección completa.
+
+**Fase 5 completada**.
+
+### Fase 6 — file_hide (ocultación de ficheros)
+
+**Fecha**: 2026-11-25
+
+**Paso 1 — Diseño (Qwen 3.5, modelo `llm-cpp`)**
+- Prompt: diseñar cabecera para hook de NtQueryDirectoryFile
+- Resultado: no pudo generar salida útil — el modelo sigue volcando todo al campo `thinking` de la API de Ollama y no produce nada en `response`, incluso con `think: false`. Consistente con la Fase 2 (salida inutilizable para tareas de hooking)
+- Cabecera escrita directamente por Claude
+
+**Paso 2 — Implementación (Qwen 2.5, modelo `llm-cpp-fast`)**
+- Prompt: implementar file_hide.c con la cabecera corregida, siguiendo el patrón de hook.c
+- Resultado: 3183 bytes de código. 9 bugs detectados en la revisión de Claude:
+  1. Include con `<>` en vez de `""`
+  2. Trampoline sin JMP de vuelta (solo 12 bytes, sin ser ejecutable)
+  3. Instalación del JMP con casts de puntero en vez de los 12 bytes del `mov rax; jmp rax`
+  4. Llama al original después del filtrado en vez de antes
+  5. Bucle infinito cuando `NextEntryOffset==0`
+  6. `prefix_matches` con argumentos invertidos
+  7. Primera entrada oculta cambia variable local sin mover el buffer
+  8. Última entrada no pone `prev->NextEntryOffset = 0`
+  9. `STATUS_NO_MORE_FILES` devuelto siempre al salir del bucle
+- Tiempo: ~45 s
+
+**Correcciones de Claude**: reescritura completa de file_hide.c siguiendo el patrón de hook.c. Helpers `get_entry_name`/`get_next_offset`/`set_next_offset` para abstraer las dos variantes de struct (`FileDirectoryInformation` y `FileBothDirectoryInformation`). Buffer de nombre local null-terminado (FileName de NTFS no lleva null). Lógica de eliminación: primera entrada → memmove; intermedia → `prev->NextEntryOffset += next`; última → `prev->NextEntryOffset = 0`; todas filtradas → `STATUS_NO_MORE_FILES`.
+
+**Valoración**: patrón idéntico a la Fase 2. El 2.5 no maneja inline hooking x64 (trampoline, JMP absoluto, VirtualProtect); sí entiende la lógica de alto nivel (recorrer linked list, filtrar por prefijo) pero con errores de orden y de boundary. 9 bugs es comparable a los 10 de la Fase 2.
+
+**dllmain.c**: actualizado para instalar `file_hide_install()` en `DLL_PROCESS_ATTACH` y `file_hide_remove()` en `DLL_PROCESS_DETACH`, después del hook de procesos.
+
+**Compilación (2026-11-25)**: `hook.dll` (100 KB), `injector.exe` (271 KB), `scanner.exe` (265 KB) — sin errores, solo warnings de cast de GetProcAddress (igual que hook.c).
+
+**Prueba en VM**: pendiente.
+
+### Fase 7 — persistencia por registro
+
+**Fecha**: 2026-11-25
+
+**Implementación**: módulo `persist.c` con 3 funciones: `persist_install` (escribe `REG_SZ` en `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`), `persist_remove` (la borra, tolerante si no existe), `persist_check` (comprueba si existe). Usa `RegOpenKeyExW`/`RegSetValueExW`/`RegDeleteValueW`/`RegQueryValueExW`.
+
+**Uso de IA**: código escrito directamente por Claude. La API de registro de Windows es trivial (4 funciones, documentación completa en MSDN) y no justificaba pasar por el flujo de 3.5→2.5→revisión. `persist_main.c` como CLI de prueba también escrito por Claude.
+
+**Compilación (2026-11-25)**: `persist.exe` (264 KB) con `-ladvapi32`, sin errores.
+
+**Prueba en VM**: pendiente.
+
+### Fase 8 — install / uninstall
+
+**Fecha**: 2026-11-25
+
+**Implementación**: `install.c` orquesta la instalación completa: (1) lee prefijos de `config.txt`, (2) copia `hook.dll`, `injector.exe` y `config.txt` con el primer prefijo como nombre (`$rkhook.dll`, etc.), (3) llama a `persist_install` para la clave Run, (4) llama a `inject_all` para hookear todos los procesos. `uninstall.c` hace lo inverso: elimina la clave Run y borra los ficheros copiados con prefijo.
+
+**Uso de IA**: código escrito directamente por Claude. Ambos ficheros son orquestadores que llaman a funciones ya existentes (config_reader, persist, injector); no hay lógica nueva, solo secuenciación.
+
+**Compilación (2026-11-25)**: `install.exe` (280 KB) y `uninstall.exe` (275 KB), ambos con `-ladvapi32`, sin errores.
+
+**Prueba en VM**: pendiente.
