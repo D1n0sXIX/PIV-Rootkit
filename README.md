@@ -38,7 +38,7 @@ Bitácora detallada por fase en [`docs/USO-IA.md`](docs/USO-IA.md).
 | 3 | `injector` | Inyección DLL clásica (`OpenProcess` + `VirtualAllocEx` + `WriteProcessMemory` + `CreateRemoteThread`) en un PID o en todos | Completada |
 | 4 | (sin código nuevo) | Auto-ocultación: los binarios del rootkit se renombran con el prefijo (`$rkinjector.exe`) y el propio hook los filtra | Completada |
 | 5 | Integración | Medición completa con Sysmon: config estándar (Ronda A) vs config parcheada (Ronda B). Matriz de visibilidad | Completada |
-| 6 | `file_hide` | Inline hook de `NtQueryDirectoryFile`: oculta ficheros y carpetas con prefijo de la enumeración de directorio | Compilada, pendiente de probar |
+| 6 | `file_hide` | Inline hook de `NtQueryDirectoryFile` / `NtQueryDirectoryFileEx`: oculta ficheros y carpetas con prefijo de la enumeración de directorio. En builds con forwarding stub E9 (Win Server 2019 17763) usa relay gateway con `alloc_near()` | Completada |
 | 7 | `persist` | Persistencia vía clave `HKCU\...\Run`: instala, comprueba y elimina una entrada de autoarranque | Compilada, pendiente de probar |
 | 8 | `install` + `uninstall` | `install.exe`: copia ficheros con prefijo + instala Run + inyecta en todos. `uninstall.exe`: elimina Run + borra ficheros con prefijo | Compilada, pendiente de probar |
 
