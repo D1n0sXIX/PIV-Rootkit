@@ -160,23 +160,6 @@ static NTSTATUS NTAPI HookedNtQueryDirectoryFileEx(
         FileInformation, Length, FileInformationClass,
         QueryFlags, FileName);
 
-#ifdef FILE_HIDE_DIAG
-    {
-        static int logged = 0;
-        if (!logged) {
-            logged = 1;
-            HANDLE hf = CreateFileA("C:\\lab\\debug_ex_class.bin",
-                                    GENERIC_WRITE, 0, NULL,
-                                    CREATE_ALWAYS, 0, NULL);
-            if (hf != INVALID_HANDLE_VALUE) {
-                DWORD w;
-                ULONG data[2] = { FileInformationClass, (ULONG)status };
-                WriteFile(hf, data, sizeof(data), &w, NULL);
-                CloseHandle(hf);
-            }
-        }
-    }
-#endif
     return filter_entries(status, FileInformation, Length, FileInformationClass);
 }
 
