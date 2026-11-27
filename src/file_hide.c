@@ -8,6 +8,7 @@
 #define JMP_SIZE    12
 
 #define FileDirectoryInformation_         1
+#define FileFullDirectoryInformation_     2
 #define FileBothDirectoryInformation_     3
 #define FileIdBothDirectoryInformation_  37
 #define STATUS_NO_MORE_FILES_ ((NTSTATUS)0x80000006L)
@@ -45,6 +46,9 @@ static void get_entry_name(BYTE *entry, ULONG info_class,
         FILE_BOTH_DIR_INFORMATION *e = (FILE_BOTH_DIR_INFORMATION *)entry;
         *name     = e->FileName;
         *name_len = e->FileNameLength;
+    } else if (info_class == FileFullDirectoryInformation_) {
+        *name_len = *(ULONG *)(entry + 60);
+        *name     = (WCHAR *)(entry + 68);
     } else {
         FILE_DIRECTORY_INFORMATION *e = (FILE_DIRECTORY_INFORMATION *)entry;
         *name     = e->FileName;
@@ -73,6 +77,7 @@ static NTSTATUS filter_entries(NTSTATUS status, PVOID FileInformation,
         return status;
 
     if (FileInformationClass != FileDirectoryInformation_ &&
+        FileInformationClass != FileFullDirectoryInformation_ &&
         FileInformationClass != FileBothDirectoryInformation_ &&
         FileInformationClass != FileIdBothDirectoryInformation_)
         return status;
