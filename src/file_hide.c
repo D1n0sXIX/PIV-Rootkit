@@ -68,6 +68,18 @@ static void set_next_offset(BYTE *entry, ULONG info_class, ULONG val)
 static NTSTATUS filter_entries(NTSTATUS status, PVOID FileInformation,
                                ULONG Length, ULONG FileInformationClass)
 {
+#ifdef FILE_HIDE_DEBUG
+    HANDLE hf = CreateFileA("C:\\lab\\debug_class.bin",
+                            GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    if (hf != INVALID_HANDLE_VALUE) {
+        DWORD w;
+        ULONG data[2] = { FileInformationClass, (ULONG)status };
+        WriteFile(hf, data, sizeof(data), &w, NULL);
+        CloseHandle(hf);
+    }
+    return status;
+#endif
+
     if (status != 0)
         return status;
 
